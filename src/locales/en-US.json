@@ -50,11 +50,13 @@
   "web": {
     "language_pt_code": "PT",
     "language_en_code": "EN",
+    "language_fr_code": "FR",
     "connecting": "Connecting to the server…",
     "document_title": "EatVenture · Control",
     "invalid_token": "Invalid access token.",
     "language_en_us": "English",
     "language_pt_br": "Portuguese",
+    "language_fr_fr": "French",
     "logs_empty": "No logs available. Start the bot to follow its output.",
     "no_changes": "No pending changes",
     "no_log_download": "There are no lines to download yet.",
