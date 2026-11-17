@@ -44,8 +44,8 @@
     "positional_arguments": "positional arguments",
     "options": "options",
     "help": "show this help message and exit",
-    "locale_help": "message language (pt-BR or en-US)",
-    "catalog_valid": "Valid catalogs: {count} keys in pt-BR and en-US."
+    "locale_help": "message language (pt-BR, en-US or fr-FR)",
+    "catalog_valid": "Valid catalogs: {count} keys in pt-BR, en-US and fr-FR."
   },
   "web": {
     "language_pt_code": "PT",

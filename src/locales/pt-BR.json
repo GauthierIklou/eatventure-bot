@@ -44,8 +44,8 @@
     "positional_arguments": "argumentos posicionais",
     "options": "opções",
     "help": "mostra esta ajuda e sai",
-    "locale_help": "idioma das mensagens (pt-BR ou en-US)",
-    "catalog_valid": "Catálogos válidos: {count} chaves em pt-BR e en-US."
+    "locale_help": "idioma das mensagens (pt-BR, en-US ou fr-FR)",
+    "catalog_valid": "Catálogos válidos: {count} chaves em pt-BR, en-US e fr-FR."
   },
   "web": {
     "language_pt_code": "PT",
