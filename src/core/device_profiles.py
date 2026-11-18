@@ -220,6 +220,9 @@ def _read_profile(path):
         raise ValueError(t("messages.invalid_profile_file")) from error
     if not isinstance(data, dict) or "device_id" not in data:
         raise ValueError(t("messages.profile_device_required"))
+    settings = data.get("settings")
+    if isinstance(settings, dict):
+        settings.pop("dataset_max_samples_per_label", None)
     run = data.get("run")
     if isinstance(run, dict) and run.get("detector_mode") == "continuous":
         run["detector_mode"] = "templates"

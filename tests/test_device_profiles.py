@@ -44,6 +44,20 @@ class DeviceProfilesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.save("phone", original)
 
+    def test_removed_dataset_setting_does_not_block_saved_profile(self):
+        path = self.store.path_for("phone")
+        path.parent.mkdir()
+        original = {"device_id": "phone", "settings": {
+            "dataset_max_samples_per_label": 400, "capture_max_fps": 30,
+        }}
+        path.write_text(json.dumps(original), encoding="utf-8")
+
+        profile = self.store.load("phone")
+        self.assertEqual(profile["settings"], {"capture_max_fps": 30})
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), original)
+        with self.assertRaises(ValueError):
+            self.store.save("phone", original)
+
     def test_profiles_are_isolated_and_ids_never_form_paths(self):
         first = "192.168.1.4:39015"
         second = "../../outside"
