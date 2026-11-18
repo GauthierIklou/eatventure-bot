@@ -220,6 +220,9 @@ def _read_profile(path):
         raise ValueError(t("messages.invalid_profile_file")) from error
     if not isinstance(data, dict) or "device_id" not in data:
         raise ValueError(t("messages.profile_device_required"))
+    run = data.get("run")
+    if isinstance(run, dict) and run.get("detector_mode") == "continuous":
+        run["detector_mode"] = "templates"
     return validate_profile(data["device_id"], data)
 
 

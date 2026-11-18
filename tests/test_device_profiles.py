@@ -29,6 +29,21 @@ class DeviceProfilesTests(unittest.TestCase):
         })
         self.assertFalse(self.store.root.exists())
 
+    def test_legacy_continuous_mode_loads_as_templates(self):
+        path = self.store.path_for("phone")
+        path.parent.mkdir()
+        original = {"device_id": "phone", "name": "Master", "run": {"detector_mode": "continuous", "ai_collect": True}}
+        path.write_text(json.dumps(original), encoding="utf-8")
+
+        profile = self.store.load("phone")
+        self.assertEqual(profile["run"]["detector_mode"], "templates")
+        self.assertTrue(profile["run"]["ai_collect"])
+        self.assertEqual(profile["name"], "Master")
+        self.assertEqual(self.store.list_profiles(), [profile])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), original)
+        with self.assertRaises(ValueError):
+            self.store.save("phone", original)
+
     def test_profiles_are_isolated_and_ids_never_form_paths(self):
         first = "192.168.1.4:39015"
         second = "../../outside"
