@@ -182,6 +182,7 @@ class StateMachine:
 
         # Espera depois do long press de comida.
         self.up_food_wait_start = None
+        self._food_station_wait_start = None
 
         # Item de "food" atual, esperando up_food. Guardado aqui (e
         # não só na detecção local) porque _wait_or_give_up precisa
@@ -302,6 +303,8 @@ class StateMachine:
         self.cycle_at += duration
         if self.up_food_wait_start is not None:
             self.up_food_wait_start += duration
+        if self._food_station_wait_start is not None:
+            self._food_station_wait_start += duration
         self._frame = None
         self._frame_time = None
         self._detections = []
@@ -452,6 +455,7 @@ class StateMachine:
             return False
 
         requested_action = action
+        fallback_food_action = False
 
         if (
             self._dismiss_fallback
@@ -466,6 +470,7 @@ class StateMachine:
                 detection = alternative
                 action = "food"
                 next_state = FOOD
+                fallback_food_action = True
 
         dismiss_before = (self._dismiss_attempts, self._dismiss_rounds)
         action = self._escalate(action)
@@ -543,6 +548,8 @@ class StateMachine:
         # que ignorar se ele desistir.
         if action == "food":
             self._food_target = detection
+            if fallback_food_action:
+                self._food_station_wait_start = self.last_action_time
 
         return True
 
@@ -810,6 +817,7 @@ class StateMachine:
         # Variáveis locais do estado anterior não vazam
         # para o próximo.
         self.up_food_wait_start = None
+        self._food_station_wait_start = None
 
         # Trocar de estado é progresso: as contagens zeram.
         self._last_action = None
@@ -855,11 +863,28 @@ class StateMachine:
 
         if up_food is not None:
 
+            self._food_station_wait_start = None
+
             if self._act("upgrade_food", up_food):
 
                 self._delay_exploration()
 
                 self.up_food_wait_start = time.monotonic()
+
+            return
+
+        if self._food_station_wait_start is not None:
+
+            elapsed = (
+                time.monotonic()
+                - self._food_station_wait_start
+            )
+
+            if elapsed < UP_FOOD_WAIT:
+                return
+
+            if self._scroll_up_after_food_wait():
+                return
 
             return
 
@@ -883,6 +908,46 @@ class StateMachine:
                 return
 
         self._wait_or_give_up()
+
+    def _scroll_up_after_food_wait(self):
+
+        if not self._can_act():
+            return False
+
+        if not self.action_manager.swipe("up"):
+            return False
+
+        now = time.monotonic()
+
+        logger.info(
+            t("messages.food_upgrade_missing"),
+            UP_FOOD_WAIT,
+        )
+        logger.info(
+            t("messages.explore_swipe"),
+            "up",
+            1,
+            self.max_swipes,
+        )
+
+        self.last_action_time = now
+        self._last_was_swipe = True
+        self._reset_food_tracking()
+        self._enter(NORMAL)
+        self._food_target = None
+        self.explore_anchor = now
+        self.explore_found = False
+        self.swipe_direction = "up"
+        self.swipe_count = 1
+
+        if self.swipe_count >= self.max_swipes:
+
+            self.swipe_direction = "down"
+            self.swipe_count = 0
+
+        self._record("swipe_up", None)
+
+        return True
 
     def _new_point(self, detections):
         """Igual ao FOOD, mas basta um clique para liberar — não é long press."""
@@ -1019,6 +1084,7 @@ class StateMachine:
         self._dismiss_fallback = False
         self._dismiss_attempts = 0
         self._dismiss_rounds = 0
+        self._food_station_wait_start = None
 
         self._food_target = None
         self._reset_food_tracking()

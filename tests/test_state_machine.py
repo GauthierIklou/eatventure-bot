@@ -932,6 +932,26 @@ def test_gray_max_persistente_clica_na_estacao_food():
     assert actions.actions[-1] == "upgrade_food"
 
 
+def test_food_sem_up_food_apos_max_faz_um_swipe_para_cima():
+
+    machine, actions, clock = build()
+    machine._enter(sm.FOOD)
+    machine._food_target = detection("food")
+    machine._food_station_wait_start = clock.now
+
+    machine.update([detection("gray_max")])
+
+    assert actions.calls == []
+
+    clock.advance(UP_FOOD_WAIT + 0.01)
+
+    machine.update([detection("gray_max")])
+
+    assert actions.calls[-1] == ("swipe", "up")
+    assert machine.state == sm.NORMAL
+    assert machine._last_was_swipe is True
+
+
 
 def test_nunca_usa_back():
     """Se alguém reintroduzir BACK, este teste avisa antes de o bot fechar o jogo sozinho."""
