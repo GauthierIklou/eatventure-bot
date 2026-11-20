@@ -961,6 +961,22 @@ def test_gray_max_persistente_autorise_plane_et_renovate():
     assert machine.state == sm.NORMAL
 
 
+def test_gray_max_persistente_autorise_build():
+
+    machine, actions, _ = build()
+    machine._dismiss_fallback = True
+
+    machine.update(
+        [
+            detection("gray_max"),
+            detection("build"),
+        ]
+    )
+
+    assert actions.actions[-1] == "click"
+    assert machine.state == sm.RENOVATE
+
+
 def test_food_sem_up_food_apos_max_faz_um_swipe_para_cima():
 
     machine, actions, clock = build()

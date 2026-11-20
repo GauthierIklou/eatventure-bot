@@ -120,6 +120,7 @@ STATE_RULES = {
 DISMISS_FALLBACK_ACTIONS = {
     "food": ("food", FOOD),
     "plane": ("plane", RENOVATE),
+    "build": ("click", RENOVATE),
     "renovate": ("renovate_click", NORMAL),
 }
 DISMISS_FALLBACK_CATEGORIES = tuple(DISMISS_FALLBACK_ACTIONS)
