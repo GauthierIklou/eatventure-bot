@@ -932,6 +932,35 @@ def test_gray_max_persistente_clica_na_estacao_food():
     assert actions.actions[-1] == "upgrade_food"
 
 
+def test_gray_max_persistente_autorise_plane_et_renovate():
+
+    machine, actions, clock = build()
+    machine._dismiss_fallback = True
+
+    machine.update(
+        [
+            detection("gray_max"),
+            detection("plane"),
+        ]
+    )
+
+    assert actions.actions[-1] == "plane"
+    assert machine.state == sm.RENOVATE
+
+    machine._dismiss_fallback = True
+    clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.01)
+
+    machine.update(
+        [
+            detection("gray_max"),
+            detection("renovate"),
+        ]
+    )
+
+    assert actions.actions[-1] == "renovate_click"
+    assert machine.state == sm.NORMAL
+
+
 def test_food_sem_up_food_apos_max_faz_um_swipe_para_cima():
 
     machine, actions, clock = build()

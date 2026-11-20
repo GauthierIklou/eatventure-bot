@@ -117,7 +117,12 @@ STATE_RULES = {
     ],
 }
 
-DISMISS_FALLBACK_CATEGORIES = ("food",)
+DISMISS_FALLBACK_ACTIONS = {
+    "food": ("food", FOOD),
+    "plane": ("plane", RENOVATE),
+    "renovate": ("renovate_click", NORMAL),
+}
+DISMISS_FALLBACK_CATEGORIES = tuple(DISMISS_FALLBACK_ACTIONS)
 
 
 class StateMachine:
@@ -455,11 +460,10 @@ class StateMachine:
             return False
 
         requested_action = action
-        fallback_food_action = False
+        fallback_category = None
 
         if (
             self._dismiss_fallback
-            and action != "food"
             and self._find(self._detections, "gray_max") is not None
         ):
 
@@ -468,9 +472,10 @@ class StateMachine:
             if alternative is not None:
 
                 detection = alternative
-                action = "food"
-                next_state = FOOD
-                fallback_food_action = True
+                fallback_category = detection["category"]
+                action, next_state = DISMISS_FALLBACK_ACTIONS[
+                    fallback_category
+                ]
 
         dismiss_before = (self._dismiss_attempts, self._dismiss_rounds)
         action = self._escalate(action)
@@ -548,15 +553,22 @@ class StateMachine:
         # que ignorar se ele desistir.
         if action == "food":
             self._food_target = detection
-            if fallback_food_action:
+            if fallback_category == "food":
                 self._food_station_wait_start = self.last_action_time
 
         return True
 
     def _next_dismiss_alternative(self):
-        """Escolhe uma detecção Food disponível para escapar de gray_max persistente."""
+        """Escolhe um dos alvos autorizados para escapar de gray_max persistente."""
 
-        return self._find(self._detections, "food")
+        for category in DISMISS_FALLBACK_CATEGORIES:
+
+            detection = self._find(self._detections, category)
+
+            if detection is not None:
+                return detection
+
+        return None
 
     def _record(self, action, detection):
         """Entrega ao gravador a ação que ACABOU de sair; chamado de dentro de _act pois é o único ponto onde se sabe que ela não foi barrada por cooldown ou worker ocupado."""
