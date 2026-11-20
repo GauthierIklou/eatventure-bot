@@ -117,6 +117,14 @@ STATE_RULES = {
     ],
 }
 
+DISMISS_FALLBACK_CATEGORIES = tuple(
+    dict.fromkeys(
+        category
+        for rules in STATE_RULES.values()
+        for category, _, _ in rules
+    )
+)
+
 
 class StateMachine:
 
@@ -258,6 +266,8 @@ class StateMachine:
         # Tentativas consecutivas de fechar algo. Sobe a escada
         # de escalonamento em vez de repetir o que não funcionou.
         self._dismiss_attempts = 0
+        self._dismiss_fallback = False
+        self._dismiss_fallback_target = None
 
         # Quantas vezes já precisou rolar para escapar.
         self._dismiss_rounds = 0
@@ -279,6 +289,13 @@ class StateMachine:
         # emergência de qualquer modal). No FIM da lista: é rede
         # de segurança, não prioridade — onde importa de verdade
         # ele já está nas regras, na posição certa.
+        if self._dismiss_fallback:
+
+            for category in DISMISS_FALLBACK_CATEGORIES:
+
+                if category not in categories:
+                    categories.append(category)
+
         if "close" not in categories:
 
             categories.append("close")
@@ -354,6 +371,17 @@ class StateMachine:
                 self._stale_warned = now
 
             return
+
+        if (
+            self._dismiss_fallback
+            and not self.action_manager.is_busy()
+            and self._find(detections, "gray_max") is None
+        ):
+
+            self._dismiss_fallback = False
+            self._dismiss_fallback_target = None
+            self._dismiss_attempts = 0
+            self._dismiss_rounds = 0
 
         if self.state == FOOD:
 
@@ -431,6 +459,22 @@ class StateMachine:
         if not self._can_act():
             return False
 
+        requested_action = action
+
+        if (
+            self._dismiss_fallback
+            and action != "double_tap"
+            and self._find(self._detections, "gray_max") is not None
+        ):
+
+            alternative = self._next_dismiss_alternative()
+
+            if alternative is not None:
+
+                detection = alternative
+                action = "double_tap"
+                next_state = None
+
         dismiss_before = (self._dismiss_attempts, self._dismiss_rounds)
         action = self._escalate(action)
 
@@ -439,6 +483,11 @@ class StateMachine:
             # Worker ocupado: tenta no próximo frame.
             self._dismiss_attempts, self._dismiss_rounds = dismiss_before
             return False
+
+        if action == "double_tap" and self._dismiss_fallback:
+            self._dismiss_fallback_target = (
+                self._dismiss_detection_key(detection)
+            )
 
         confidence = (
             detection["confidence"]
@@ -454,6 +503,11 @@ class StateMachine:
         )
 
         self.last_action_time = time.monotonic()
+
+        if action == "scroll_bottom" and requested_action == "gray_max":
+
+            self._dismiss_fallback = True
+            self._dismiss_fallback_target = None
 
         # `scroll_bottom` é seis swipes seguidos: move a vista
         # mais que qualquer swipe solto, e por isso merece a
@@ -505,6 +559,55 @@ class StateMachine:
             self._food_target = detection
 
         return True
+
+    @staticmethod
+    def _dismiss_detection_key(detection):
+
+        return (
+            detection["category"],
+            detection["x"],
+            detection["y"],
+            detection["width"],
+            detection["height"],
+        )
+
+    def _next_dismiss_alternative(self):
+        """Escolhe o próximo alvo visível, em ordem de prioridade normal, para escapar de gray_max persistente."""
+
+        priorities = {
+            category: index
+            for index, category in enumerate(
+                DISMISS_FALLBACK_CATEGORIES
+            )
+            if category != "gray_max"
+        }
+
+        alternatives = sorted(
+            (
+                detection
+                for detection in self._detections
+                if detection["category"] in priorities
+            ),
+            key=lambda detection: (
+                priorities[detection["category"]],
+                detection["y"],
+                detection["x"],
+            ),
+        )
+
+        if not alternatives:
+            return None
+
+        previous = self._dismiss_fallback_target
+
+        if previous is not None:
+
+            for index, detection in enumerate(alternatives):
+
+                if self._dismiss_detection_key(detection) == previous:
+                    return alternatives[(index + 1) % len(alternatives)]
+
+        return alternatives[0]
 
     def _record(self, action, detection):
         """Entrega ao gravador a ação que ACABOU de sair; chamado de dentro de _act pois é o único ponto onde se sabe que ela não foi barrada por cooldown ou worker ocupado."""
@@ -607,6 +710,9 @@ class StateMachine:
 
     def _escalate(self, action):
         """Escada de fechamento: N tentativas no ponto fixo, depois rola até o fim e tenta de novo — o ponto pode ser o que ABRE o painel, então tocar nele às vezes reabre em vez de fechar; não há BACK neste jogo."""
+
+        if action == "double_tap":
+            return action
 
         if action not in DISMISS_ACTIONS:
 
@@ -771,6 +877,8 @@ class StateMachine:
         self._repeat_count = 0
         self._dismiss_attempts = 0
         self._dismiss_rounds = 0
+        self._dismiss_fallback = False
+        self._dismiss_fallback_target = None
 
         if state != FOOD and previous_state != FOOD:
 
@@ -969,6 +1077,11 @@ class StateMachine:
         self._enter(NORMAL)
 
         self.last_action_time = 0.0
+
+        self._dismiss_fallback = False
+        self._dismiss_fallback_target = None
+        self._dismiss_attempts = 0
+        self._dismiss_rounds = 0
 
         self._food_target = None
         self._reset_food_tracking()

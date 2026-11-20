@@ -1013,6 +1013,42 @@ def test_dismiss_toca_no_ponto_neutro():
         actions.stop()
 
 
+def test_double_tap_usa_centro_da_deteccao():
+
+    _, _, actions, _ = build()
+
+    actions.start()
+
+    try:
+
+        actions.set_frame_size(1080, 2400)
+
+        detection = {
+            "category": "box",
+            "name": "box.png",
+            "confidence": 0.99,
+            "color_similarity": 0.95,
+            "min_threshold": 0.9,
+            "x": 100,
+            "y": 200,
+            "width": 80,
+            "height": 80,
+        }
+
+        assert actions.execute("double_tap", detection)
+
+        deadline = time.monotonic() + 5.0
+
+        while actions.is_busy() and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert actions.android.taps == [(140, 240), (140, 240)]
+
+    finally:
+
+        actions.stop()
+
+
 def test_dismiss_converte_para_device_menor():
     """O ponto de dispensa é anotado na resolução de referência: em outro device tem de escalar."""
 

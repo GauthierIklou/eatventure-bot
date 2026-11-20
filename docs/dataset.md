@@ -88,12 +88,13 @@ jogando.
 
 ### Quais ações entram
 
-`DATASET_ACTIONS` no config contém 19 categorias, incluindo os dois
+`DATASET_ACTIONS` no config contém 24 ações, incluindo os dois
 swipes de exploração.
 
 | Comportamento | Ações |
 |---|---|
 | toque no centro da detecção | `click` (o build), `close`, `food`, `new_point`, `new_point_click`, `open_box`, `open_renovate`, `open_store_click`, `plane`, `renovate_click`, `upgrade` |
+| dois toques no centro da detecção | `double_tap` |
 | vários toques | `upgrade_item` |
 | toque longo | `upgrade_food` — cobre a evolução da comida inteira, em `NORMAL` e em `FOOD` |
 | ponto fixo | `gray_max`, `gray_coin`, `dismiss` |

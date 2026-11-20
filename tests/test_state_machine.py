@@ -897,6 +897,42 @@ def test_max_preso_rola_a_tela_e_tenta_de_novo():
     )
 
 
+def test_gray_max_persistente_apos_rolagem_alterna_alvos_com_dois_toques():
+
+    machine, actions, clock = build()
+    gray_max = detection("gray_max")
+    alternativas = [
+        gray_max,
+        detection("box"),
+        detection("plane"),
+    ]
+
+    for _ in range(DISMISS_ATTEMPTS_BEFORE_SCROLL + 1):
+
+        machine.update([gray_max])
+
+        clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.01)
+
+    assert actions.actions[-1] == "scroll_bottom"
+
+    machine.update(alternativas)
+
+    assert actions.calls[-1] == ("double_tap", "plane")
+
+    clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.01)
+
+    machine.update(alternativas)
+
+    assert actions.calls[-1] == ("double_tap", "box")
+
+    clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.01)
+
+    machine.update([detection("box")])
+
+    assert actions.actions[-1] == "open_box"
+    assert machine._dismiss_fallback is False
+
+
 def test_nunca_usa_back():
     """Se alguém reintroduzir BACK, este teste avisa antes de o bot fechar o jogo sozinho."""
 

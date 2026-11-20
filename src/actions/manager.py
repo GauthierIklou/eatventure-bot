@@ -27,6 +27,7 @@ logger = log.get("action")
 
 
 CLICK = "click"        # toque no centro da detecção
+DOUBLE = "double"      # dois toques no centro da detecção
 REPEAT = "repeat"      # vários toques
 PRESS = "press"        # toque longo
 DISMISS = "dismiss"    # tap em ponto fixo
@@ -53,6 +54,7 @@ ACTION_TABLE = {
     "open_renovate": CLICK,
     "renovate_click": CLICK,
     "open_store_click": CLICK,
+    "double_tap": DOUBLE,
 
     "upgrade_item": REPEAT,
 
@@ -366,6 +368,10 @@ class ActionManager:
 
             self._click(name, x, y)
 
+        elif kind == DOUBLE:
+
+            self._double_tap(name, x, y)
+
         elif kind == REPEAT:
 
             self._repeat(name, x, y)
@@ -413,6 +419,18 @@ class ActionManager:
         )
 
         self.android.tap_many(x, y, UPGRADE_ITEM_CLICKS)
+
+    def _double_tap(self, name, x, y):
+
+        logger.info(
+            t("messages.clicks"),
+            name,
+            2,
+            x,
+            y,
+        )
+
+        self.android.tap_many(x, y, 2)
 
     def _hold(self, name, x, y):
         """Toque mantido curto em ponto fixo (diferente de _press, que segura no centro da detecção)."""

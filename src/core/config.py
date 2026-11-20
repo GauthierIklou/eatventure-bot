@@ -186,6 +186,7 @@ DATASET_ACTIONS = {
     "open_box",
     "open_renovate",
     "open_store_click",
+    "double_tap",
     "plane",
     "renovate_click",
     "upgrade",
