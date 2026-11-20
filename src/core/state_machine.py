@@ -117,13 +117,7 @@ STATE_RULES = {
     ],
 }
 
-DISMISS_FALLBACK_CATEGORIES = tuple(
-    dict.fromkeys(
-        category
-        for rules in STATE_RULES.values()
-        for category, _, _ in rules
-    )
-)
+DISMISS_FALLBACK_CATEGORIES = ("up_upgrade",)
 
 
 class StateMachine:
@@ -572,7 +566,7 @@ class StateMachine:
         )
 
     def _next_dismiss_alternative(self):
-        """Escolhe o próximo alvo visível, em ordem de prioridade normal, para escapar de gray_max persistente."""
+        """Escolhe a próxima melhoria de estação visível para escapar de gray_max persistente."""
 
         priorities = {
             category: index
