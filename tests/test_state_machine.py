@@ -897,15 +897,17 @@ def test_max_preso_rola_a_tela_e_tenta_de_novo():
     )
 
 
-def test_gray_max_persistente_so_da_dois_toques_em_upgrade_de_estacao():
+def test_gray_max_persistente_clica_na_estacao_food():
 
     machine, actions, clock = build()
     gray_max = detection("gray_max")
+    food_station = detection("food", x=100, y=200)
     alternativas = [
         gray_max,
         detection("box"),
         detection("plane"),
-        detection("up_upgrade"),
+        food_station,
+        detection("food", x=900, y=2200),
     ]
 
     for _ in range(DISMISS_ATTEMPTS_BEFORE_SCROLL + 1):
@@ -918,26 +920,17 @@ def test_gray_max_persistente_so_da_dois_toques_em_upgrade_de_estacao():
 
     machine.update(alternativas)
 
-    assert actions.calls[-1] == ("double_tap", "up_upgrade")
-
-    clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.01)
-
-    machine.update(
-        [
-            gray_max,
-            detection("box"),
-            detection("plane"),
-        ]
-    )
-
-    assert actions.actions[-1] == "gray_max"
-
-    clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.01)
-
-    machine.update([detection("box")])
-
-    assert actions.actions[-1] == "open_box"
+    assert actions.calls[-1] == ("food", "food")
+    assert machine.state == sm.FOOD
+    assert machine._food_target is food_station
     assert machine._dismiss_fallback is False
+
+    clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.01)
+
+    machine.update([detection("up_food")])
+
+    assert actions.actions[-1] == "upgrade_food"
+
 
 
 def test_nunca_usa_back():
