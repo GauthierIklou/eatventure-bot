@@ -787,6 +787,66 @@ def test_deteccao_do_modelo_tem_o_formato_que_a_maquina_le():
     assert deteccao["width"] == 96
 
 
+def test_model_detector_confia_no_template_forte_da_moeda_renovate(monkeypatch):
+    import vision.model_detector as model_detector
+
+    boxes = [
+        {
+            "category": "renovate",
+            "name": "item_004.png",
+            "confidence": 1.0,
+            "color_similarity": 1.0,
+            "x": 405,
+            "y": 1565,
+            "width": 75,
+            "height": 82,
+        },
+        {
+            "category": "renovate",
+            "name": "weak-color.png",
+            "confidence": 0.99,
+            "color_similarity": 0.94,
+            "x": 100,
+            "y": 100,
+            "width": 75,
+            "height": 82,
+        },
+        {
+            "category": "close",
+            "name": "close.png",
+            "confidence": 0.99,
+            "color_similarity": 0.99,
+            "x": 10,
+            "y": 10,
+            "width": 30,
+            "height": 30,
+        },
+    ]
+    passed_to_model = []
+
+    def fake_template_detect(self, frame, categories=None, exhaustive=False):
+        return boxes
+
+    def fake_model_detect(model, frame, model_boxes, min_confidence):
+        passed_to_model.extend(model_boxes)
+        return []
+
+    monkeypatch.setattr(model_detector.Detector, "detect", fake_template_detect)
+    monkeypatch.setattr(model_detector, "detect_with_model", fake_model_detect)
+    detector = model_detector.ModelDetector()
+    detector._source = None
+    monkeypatch.setattr(detector, "_model_for", lambda width, height: object())
+
+    detections = detector.detect(
+        np.zeros((120, 100, 3), dtype=np.uint8),
+        categories=["renovate", "fly", "close"],
+    )
+
+    assert [detection["category"] for detection in detections] == ["renovate"]
+    assert detections[0]["name"] == "template:renovate"
+    assert passed_to_model == boxes[1:]
+
+
 def test_maquina_de_estados_aceita_as_deteccoes_do_modelo():
     """
     Fim a fim, sem device: detecção do modelo entra, ação sai, e o alvo

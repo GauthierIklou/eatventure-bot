@@ -47,3 +47,8 @@ tests/capture/
 
 /src/vision/templates/*
 !/src/vision/templates/default/
+!/src/vision/templates/1080x2280/
+/src/vision/templates/1080x2280/*
+!/src/vision/templates/1080x2280/renovate/
+/src/vision/templates/1080x2280/renovate/*
+!/src/vision/templates/1080x2280/renovate/item_004.png

@@ -18,6 +18,9 @@ from IA.model_updates import ModelWatcher, resolve_publication  # noqa: E402
 
 logger = log.get("model_detector")
 
+RENOVATE_TEMPLATE_CONFIDENCE = 0.95
+RENOVATE_TEMPLATE_COLOR_SIMILARITY = 0.95
+
 
 class ModelDetector(Detector):
     mode = "ai"
@@ -75,7 +78,34 @@ class ModelDetector(Detector):
         else:
             boxes = self._source.boxes(frame)
             self.last_searched = self.last_total = len(boxes)
-        detections = detect_with_model(model, frame, boxes, config.AI_MIN_CONFIDENCE)
+        model_boxes = boxes
+        template_detections = []
+        if self._source is None:
+            model_boxes = []
+            for box in boxes:
+                # O modelo ainda chama a moeda da reforma de fundo.
+                if (
+                    box["category"] == "renovate"
+                    and box["confidence"] >= RENOVATE_TEMPLATE_CONFIDENCE
+                    and box["color_similarity"]
+                    >= RENOVATE_TEMPLATE_COLOR_SIMILARITY
+                ):
+                    template_detections.append(
+                        {
+                            **box,
+                            "name": "template:renovate",
+                        }
+                    )
+                else:
+                    model_boxes.append(box)
+
+        detections = detect_with_model(
+            model,
+            frame,
+            model_boxes,
+            config.AI_MIN_CONFIDENCE,
+        )
+        detections.extend(template_detections)
         allowed = set(categories) if categories is not None else None
         filtered = []
         for detection in detections:
