@@ -402,6 +402,17 @@ class _Run:
     dataset_base: dict = field(default_factory=dict)
 
 
+@dataclass
+class _ControlSession:
+    capture: object
+    session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    touch_active: bool = False
+    last_x: int = 0
+    last_y: int = 0
+    width: int = 0
+    height: int = 0
+
+
 class BotSupervisor:
     def __init__(self, root, state_root=None, store=None, devices=None):
         self.root = Path(root).resolve()
@@ -416,6 +427,7 @@ class BotSupervisor:
         self._auto_training_lock = threading.RLock()
         self._operation_locks = {}
         self._runs = {}
+        self._controls = {}
         self._reports = {}
         self._device_cache = {}
         self._auto_trainer = None
@@ -428,6 +440,18 @@ class BotSupervisor:
     def _operation_lock(self, device_id):
         with self._lock:
             return self._operation_locks.setdefault(device_id, threading.RLock())
+
+    def _stop_control_locked(self, device_id):
+        with self._lock:
+            session = self._controls.pop(device_id, None)
+        if session is not None:
+            try:
+                if session.touch_active:
+                    session.capture.inject_touch(
+                        "cancel", session.last_x, session.last_y, session.width, session.height,
+                    )
+            finally:
+                session.capture.stop()
 
     def _report_path(self, device_id):
         key = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
@@ -866,6 +890,7 @@ class BotSupervisor:
         device = self._resolve(device_id)
         device_id = device["id"]
         with self._operation_lock(device_id):
+            self._stop_control_locked(device_id)
             with self._lock:
                 if self._closing:
                     raise RuntimeError(t("messages.dashboard_stopping"))
@@ -1089,6 +1114,131 @@ class BotSupervisor:
                     raise RuntimeError(t("messages.template_pause_failed")) from error
             return {"enabled": enabled}
 
+    def start_control(self, device_id, session_id=None):
+        if session_id is not None and (
+            not isinstance(session_id, str) or re.fullmatch(r"[0-9a-f]{32}", session_id) is None
+        ):
+            raise ValueError(t("messages.invalid_control_action"))
+        device = self._resolve(device_id)
+        device_id = device["id"]
+        with self._operation_lock(device_id):
+            with self._lock:
+                if self._closing:
+                    raise RuntimeError(t("messages.dashboard_stopping"))
+                run = self._runs.get(device_id)
+                if run is not None and run.process.poll() is None:
+                    raise RuntimeError(t("messages.control_requires_stopped"))
+                session = self._controls.get(device_id)
+                if session is not None and session.capture.is_running():
+                    return {"enabled": True, "session_id": session.session_id}
+            if session is not None:
+                self._stop_control_locked(device_id)
+            if not device["connected"]:
+                raise RuntimeError(t("messages.device_not_authorized"))
+            with self._lock:
+                active_controls = list(self._controls.items())
+                device_cache = dict(self._device_cache)
+            for other_id, other in active_controls:
+                aliases = device_cache.get(other_id, {}).get("aliases", [])
+                if device["serial"] in aliases and other.capture.is_running():
+                    raise RuntimeError(t("messages.duplicate_adb_connection"))
+            from capture.screen import ScreenCapture
+
+            capture = ScreenCapture(device["serial"], control=True)
+            try:
+                capture.start()
+            except Exception:
+                capture.stop()
+                raise
+            session = _ControlSession(capture, session_id or uuid.uuid4().hex)
+            with self._lock:
+                run = self._runs.get(device_id)
+                rejected = self._closing or (run is not None and run.process.poll() is None)
+                if not rejected:
+                    self._controls[device_id] = session
+            if rejected:
+                capture.stop()
+                raise RuntimeError(t("messages.control_requires_stopped"))
+            return {"enabled": True, "session_id": session.session_id}
+
+    def stop_control(self, device_id, session_id=None):
+        if session_id is not None and (
+            not isinstance(session_id, str) or re.fullmatch(r"[0-9a-f]{32}", session_id) is None
+        ):
+            raise ValueError(t("messages.invalid_control_action"))
+        device = self._resolve(device_id)
+        device_id = device["id"]
+        with self._operation_lock(device_id):
+            with self._lock:
+                session = self._controls.get(device_id)
+                if session_id is not None and (session is None or session.session_id != session_id):
+                    return {"enabled": session is not None}
+            self._stop_control_locked(device_id)
+        return {"enabled": False}
+
+    def open_control_stream(self, device_id, session_id):
+        device_id = self._runtime_device_id(device_id)
+        with self._lock:
+            session = self._controls.get(device_id)
+            if session is None or session.session_id != session_id or not session.capture.is_running():
+                raise RuntimeError(t("messages.control_session_ended"))
+        return {"device_id": device_id, "session_id": session_id}
+
+    def next_control_frame(self, device_id, session_id, after=None):
+        with self._lock:
+            session = self._controls.get(device_id)
+            if session is None or session.session_id != session_id or not session.capture.is_running():
+                raise RuntimeError(t("messages.control_session_ended"))
+            capture = session.capture
+        frame, version, _ = capture.get_frame(since_version=after, timeout=1.0)
+        if frame is None or version == after:
+            return None
+        import cv2
+
+        success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        content = encoded.tobytes() if success else b""
+        if not content or len(content) > 5_000_000:
+            raise RuntimeError(t("messages.control_frame_failed"))
+        return {"signature": version, "content": content}
+
+    def control_action(self, device_id, data):
+        if not isinstance(data, dict):
+            raise ValueError(t("messages.invalid_control_action"))
+        action = data.get("action")
+        if not isinstance(action, str) or action not in {"down", "move", "up", "cancel"}:
+            raise ValueError(t("messages.invalid_control_action"))
+        device = self._resolve(device_id)
+        device_id = device["id"]
+        with self._operation_lock(device_id):
+            with self._lock:
+                session = self._controls.get(device_id)
+                run = self._runs.get(device_id)
+                if session is None or not session.capture.is_running():
+                    raise RuntimeError(t("messages.control_session_ended"))
+                if run is not None and run.process.poll() is None:
+                    raise RuntimeError(t("messages.control_requires_stopped"))
+                frame, _, _ = session.capture.get_frame(timeout=0)
+                if frame is None:
+                    raise RuntimeError(t("messages.control_frame_failed"))
+                height, width = frame.shape[:2]
+            if action == "down" and session.touch_active:
+                raise ValueError(t("messages.invalid_control_action"))
+            if action in {"move", "up"} and not session.touch_active:
+                raise ValueError(t("messages.invalid_control_action"))
+            if action == "cancel" and not session.touch_active:
+                return {"ok": True}
+            x, y = data.get("x"), data.get("y")
+            if type(x) is not int or type(y) is not int or not 0 <= x < width or not 0 <= y < height:
+                raise ValueError(t("messages.invalid_control_action"))
+            session.capture.inject_touch(action, x, y, width, height)
+            session.last_x, session.last_y = x, y
+            session.width, session.height = width, height
+            if action == "down":
+                session.touch_active = True
+            elif action in {"up", "cancel"}:
+                session.touch_active = False
+        return {"ok": True}
+
     def vision_frame(self, device_id, mode="vision"):
         device_id = self._runtime_device_id(device_id)
         self.request_vision(device_id, True, mode)
@@ -1311,6 +1461,10 @@ class BotSupervisor:
             for run in self._runs.values():
                 run.recovery_cancel.set()
             auto_trainer = self._auto_trainer
+            control_ids = list(self._controls)
+        for device_id in control_ids:
+            with self._operation_lock(device_id):
+                self._stop_control_locked(device_id)
         if auto_trainer is not None:
             auto_trainer.stop()
         with self._lock:

@@ -62,6 +62,30 @@ async def vision_stream_frames(request, supervisor, device_id, session_id, mode)
         await asyncio.sleep(max(0, MIN_FRAME_INTERVAL - (time.monotonic() - started_at)))
 
 
+async def control_stream_frames(request, supervisor, device_id, session_id):
+    from starlette.concurrency import run_in_threadpool
+
+    previous = None
+    while not await request.is_disconnected():
+        started_at = time.monotonic()
+        try:
+            frame = await run_in_threadpool(
+                supervisor.next_control_frame, device_id, session_id, previous,
+            )
+        except (KeyError, RuntimeError):
+            return
+        if frame is not None and frame["signature"] != previous:
+            previous = frame["signature"]
+            content = frame["content"]
+            yield (
+                b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                + str(len(content)).encode("ascii") + b"\r\n\r\n"
+            )
+            yield content
+            yield b"\r\n"
+        await asyncio.sleep(max(0, MIN_FRAME_INTERVAL - (time.monotonic() - started_at)))
+
+
 def access_token(state_root):
     supplied = os.environ.get("EATVENTURE_WEB_TOKEN")
     if supplied:
@@ -476,6 +500,31 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         stream = await run_in_threadpool(supervisor.open_vision_stream, device_id, mode)
         return StreamingResponse(
             vision_stream_frames(request, supervisor, stream["device_id"], stream["session_id"], mode),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/devices/{device_id}/control")
+    async def device_control(device_id: str, request: Request):
+        from starlette.concurrency import run_in_threadpool
+        data = await body(request)
+        if type(data.get("enabled")) is not bool:
+            raise ValueError(t("messages.enabled_boolean_required"))
+        if data["enabled"]:
+            return await run_in_threadpool(supervisor.start_control, device_id, data.get("session_id"))
+        return await run_in_threadpool(supervisor.stop_control, device_id, data.get("session_id"))
+
+    @app.post("/api/devices/{device_id}/control/action")
+    async def device_control_action(device_id: str, request: Request):
+        from starlette.concurrency import run_in_threadpool
+        return await run_in_threadpool(supervisor.control_action, device_id, await body(request))
+
+    @app.get("/api/devices/{device_id}/control/stream")
+    async def device_control_stream(device_id: str, request: Request, session_id: str):
+        from starlette.concurrency import run_in_threadpool
+        stream = await run_in_threadpool(supervisor.open_control_stream, device_id, session_id)
+        return StreamingResponse(
+            control_stream_frames(request, supervisor, stream["device_id"], stream["session_id"]),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )

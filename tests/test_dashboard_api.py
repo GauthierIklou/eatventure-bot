@@ -68,6 +68,18 @@ class FakeSupervisor:
             raise RuntimeError("Aguardando frame da visão IA.")
         return self.frames[device_id]
 
+    def start_control(self, device_id, session_id=None):
+        self.calls.append(("start_control", device_id, session_id))
+        return {"enabled": True, "session_id": session_id or "control-session"}
+
+    def stop_control(self, device_id, session_id=None):
+        self.calls.append(("stop_control", device_id, session_id))
+        return {"enabled": False}
+
+    def control_action(self, device_id, data):
+        self.calls.append(("control_action", device_id, data))
+        return {"ok": True}
+
     def shutdown(self):
         self.calls.append(("shutdown", None))
 
@@ -161,6 +173,20 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(second.json()["devices"][0]["metrics"]["fps"], 18.0)
         self.assertEqual(self.supervisor.runtime_calls, 2)
         self.supervisor.list_devices.assert_not_called()
+
+    def test_device_control_endpoints_require_authentication_and_forward_only_requested_actions(self):
+        unauthorized = self.client.post("/api/devices/phone-a/control", json={"enabled": True})
+        self.assertEqual(unauthorized.status_code, 401)
+        connected = self.client.post("/api/devices/phone-a/control", json={"enabled": True}, headers=self.auth)
+        self.assertEqual(connected.status_code, 200, connected.text)
+        self.assertEqual(connected.json()["enabled"], True)
+        self.assertEqual(connected.json()["session_id"], "control-session")
+        action = {"action": "down", "x": 10, "y": 20}
+        response = self.client.post("/api/devices/phone-a/control/action", json=action, headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.supervisor.calls, [
+            ("start_control", "phone-a", None), ("control_action", "phone-a", action),
+        ])
 
     def test_require_token_explicitly_loads_token_and_protects_api(self):
         with patch.dict(os.environ, {"EATVENTURE_WEB_TOKEN": ""}), patch(

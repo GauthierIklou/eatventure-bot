@@ -1,6 +1,7 @@
 """Regressões de captura sem dispositivo, sockets reais ou vídeo."""
 
 import socket
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -14,6 +15,14 @@ from capture.screen import ScreenCapture
 
 
 class CaptureTests(unittest.TestCase):
+    def test_control_touch_serializes_live_scrcpy_events(self):
+        capture = ScreenCapture("device", control=True)
+        capture.control_socket = Mock()
+        capture.inject_touch("move", 12, 34, 100, 200)
+        capture.control_socket.sendall.assert_called_once_with(struct.pack(
+            ">BBQiiHHHII", 2, 2, 0xFFFFFFFFFFFFFFFE, 12, 34, 100, 200, 65535, 0, 0,
+        ))
+
     def test_porta_automatica_e_cleanup_da_propria_instancia(self):
         capture = ScreenCapture("device")
         with patch.object(ScreenCapture, "PORT", 0), patch.object(

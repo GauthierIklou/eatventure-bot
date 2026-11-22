@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import time
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from core.device_profiles import ProfileStore
 from core.preview import preview_paths
-from dashboard.supervisor import BotSupervisor, DeviceManager, _Run, _network_address
+from dashboard.supervisor import BotSupervisor, DeviceManager, _ControlSession, _Run, _network_address
 
 
 def _device():
@@ -407,6 +407,35 @@ def test_enabling_vision_requires_a_live_run(tmp_path, with_run):
     with pytest.raises(RuntimeError):
         supervisor.request_vision("hardware-1", True)
     assert not paths["request"].exists()
+
+
+def test_control_actions_map_validated_touch_events_to_scrcpy(tmp_path):
+    supervisor = _supervisor(tmp_path)
+    capture = Mock()
+    capture.is_running.return_value = True
+    capture.get_frame.return_value = (SimpleNamespace(shape=(100, 200, 3)), 1, 0)
+    supervisor._controls["hardware-1"] = _ControlSession(capture, session_id="control")
+    with patch.object(supervisor, "_resolve", return_value={"id": "hardware-1", "serial": "usb-1"}):
+        assert supervisor.control_action("hardware-1", {"action": "down", "x": 199, "y": 99}) == {"ok": True}
+    capture.inject_touch.assert_called_once_with("down", 199, 99, 200, 100)
+    assert supervisor._controls["hardware-1"].touch_active
+    supervisor._stop_control_locked("hardware-1")
+    capture.inject_touch.assert_has_calls([
+        call("down", 199, 99, 200, 100),
+        call("cancel", 199, 99, 200, 100),
+    ])
+    capture.stop.assert_called_once()
+
+
+def test_control_action_rejects_out_of_bounds_coordinates_without_scrcpy(tmp_path):
+    supervisor = _supervisor(tmp_path)
+    capture = Mock()
+    capture.is_running.return_value = True
+    capture.get_frame.return_value = (SimpleNamespace(shape=(100, 200, 3)), 1, 0)
+    supervisor._controls["hardware-1"] = _ControlSession(capture, session_id="control")
+    with patch.object(supervisor, "_resolve", return_value={"id": "hardware-1", "serial": "usb-1"}), pytest.raises(ValueError):
+        supervisor.control_action("hardware-1", {"action": "down", "x": 200, "y": 99})
+    capture.inject_touch.assert_not_called()
 
 
 def test_vision_frame_returns_current_image_and_renews_lease(tmp_path):

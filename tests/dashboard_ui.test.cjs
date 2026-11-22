@@ -109,6 +109,66 @@ test("detalhes abrem modal antes de ativar automaticamente a visão", async () =
   assert.equal(env.document.getElementById("device-dialog").open, true);
 });
 
+test("controle mapeia o clique à imagem visível e ignora as margens", () => {
+  const env = environment();
+  const point = env.run(`
+    const image = $("control-image");
+    image.naturalWidth = 1000; image.naturalHeight = 2000;
+    image.getBoundingClientRect = () => ({ left: 10, top: 20, width: 600, height: 600 });
+    ({
+      imagePoint: controlPoint({ clientX: 310, clientY: 320 }),
+      marginPoint: controlPoint({ clientX: 50, clientY: 320 }),
+      clippedPoint: controlPoint({ clientX: 50, clientY: 320 }, true)
+    });
+  `);
+  assert.deepEqual(JSON.parse(JSON.stringify(point)), {
+    imagePoint: { x: 500, y: 1000 },
+    marginPoint: null,
+    clippedPoint: { x: 0, y: 1000 }
+  });
+});
+
+test("controle envoie les événements tactiles sans attendre le relâchement", async () => {
+  const env = environment();
+  env.context.phone = device();
+  env.run(`
+    authenticated = true; state.devices = [phone]; detailId = controlDevice = phone.id; controlWanted = true;
+    var actions = []; api = async (url, options) => actions.push([url, JSON.parse(options.body)]);
+  `);
+  await env.run('sendControlPointerEvent("down", { x: 10, y: 20 })');
+  assert.deepEqual(JSON.parse(JSON.stringify(env.context.actions.map(([, action]) => action))), [
+    { action: "down", x: 10, y: 20 }
+  ]);
+  env.run('sendControlPointerEvent("move", { x: 20, y: 80 }); flushControlMove();');
+  await env.run("controlActionQueue");
+  await env.run('sendControlPointerEvent("up", { x: 20, y: 80 })');
+  assert.deepEqual(JSON.parse(JSON.stringify(env.context.actions.map(([, action]) => action))), [
+    { action: "down", x: 10, y: 20 },
+    { action: "move", x: 20, y: 80 },
+    { action: "up", x: 20, y: 80 }
+  ]);
+});
+
+test("controle transmet le dernier déplacement avant un relâchement rapide", async () => {
+  const env = environment();
+  env.context.phone = device();
+  env.run(`
+    authenticated = true; state.devices = [phone]; detailId = controlDevice = phone.id; controlWanted = true;
+    var actions = []; api = async (url, options) => actions.push([url, JSON.parse(options.body)]);
+  `);
+  env.run(`
+    sendControlPointerEvent("down", { x: 10, y: 20 });
+    sendControlPointerEvent("move", { x: 20, y: 80 });
+    sendControlPointerEvent("up", { x: 21, y: 81 });
+  `);
+  await env.run("controlActionQueue");
+  assert.deepEqual(JSON.parse(JSON.stringify(env.context.actions.map(([, action]) => action))), [
+    { action: "down", x: 10, y: 20 },
+    { action: "move", x: 21, y: 81 },
+    { action: "up", x: 21, y: 81 }
+  ]);
+});
+
 test("runtime atualiza métricas sem recriar cards nem esperar descoberta ADB", async () => {
   const env = environment();
   env.context.initial = device({ dados_sessao: 3, resolution: "1080x2400", updated_at: Date.now() / 1000 });

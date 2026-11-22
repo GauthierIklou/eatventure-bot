@@ -5,6 +5,7 @@ from core.i18n import t
 import re
 import socket
 import subprocess
+import struct
 import threading
 import time
 import os
@@ -40,12 +41,15 @@ class ScreenCapture:
 
     PORT = SCRCPY_PORT
 
-    def __init__(self, serial=None):
+    def __init__(self, serial=None, control=False):
 
         self.serial = serial  # Device; None = deixa adb decidir (requer 1 device)
+        self.control_enabled = control
 
         self.server_process = None
         self.socket = None
+        self.control_socket = None
+        self._control_lock = threading.Lock()
         self.codec = None
 
         self.scid = 0  # Server instance ID (scrcpy_<id> em scrcpy 2.0+)
@@ -53,6 +57,7 @@ class ScreenCapture:
 
         self.first_chunk = None  # Primeiro pedaço do stream (H.264 real, não descartável)
         self._forward_port = None
+        self._control_forward_port = None
         self._server_pushed = False
 
         self.running = False
@@ -89,6 +94,8 @@ class ScreenCapture:
             self.stop()
 
         server_version = self._resolve_server_version()
+        if self.control_enabled and server_version < (2, 0):
+            raise RuntimeError(t("messages.control_scrcpy_upgrade_required"))
 
         with self.condition:
             self.latest_frame = None
@@ -115,9 +122,19 @@ class ScreenCapture:
         self._start_server()
 
         logger.info(t("messages.h264_connecting"))
-        self.socket, self.first_chunk = self._connect(CAPTURE_CONNECT_TIMEOUT)
+        if self.control_enabled:
+            self.socket, _ = self._connect(CAPTURE_CONNECT_TIMEOUT, read_first_chunk=False)
+            if self.socket is not None:
+                self.control_socket = self._connect_control(CAPTURE_CONNECT_TIMEOUT)
+                if self.control_socket is not None:
+                    self.first_chunk = self._first_video_chunk(CAPTURE_CONNECT_TIMEOUT)
+                else:
+                    self._fecha(self.socket)
+                    self.socket = None
+        else:
+            self.socket, self.first_chunk = self._connect(CAPTURE_CONNECT_TIMEOUT)
 
-        if self.socket is None:
+        if self.socket is None or self.first_chunk is None:
 
             raise RuntimeError(
                 "\n".join(
@@ -168,7 +185,7 @@ class ScreenCapture:
                 )
             )
 
-    def _connect(self, timeout):
+    def _connect(self, timeout, read_first_chunk=True):
         """Conecta e aguarda primeiro pedaço válido (0 bytes = socket não existe ainda)."""
 
         deadline = time.monotonic() + timeout
@@ -189,6 +206,24 @@ class ScreenCapture:
             try:
                 candidato.connect(("127.0.0.1", self.PORT))
             except OSError:
+                self._fecha(candidato)
+                time.sleep(0.15)
+                continue
+
+            if not read_first_chunk:
+                candidato.settimeout(0.2)
+                try:
+                    alive = candidato.recv(1, socket.MSG_PEEK)
+                except socket.timeout:
+                    candidato.settimeout(2)
+                    return candidato, None
+                except OSError:
+                    self._fecha(candidato)
+                    time.sleep(0.15)
+                    continue
+                if alive:
+                    candidato.settimeout(2)
+                    return candidato, None
                 self._fecha(candidato)
                 time.sleep(0.15)
                 continue
@@ -241,6 +276,43 @@ class ScreenCapture:
         )
 
         return None, None
+
+    def _connect_control(self, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            candidate.settimeout(1.0)
+            try:
+                candidate.connect(("127.0.0.1", self._control_forward_port))
+                candidate.settimeout(0.2)
+                try:
+                    alive = candidate.recv(1, socket.MSG_PEEK)
+                except socket.timeout:
+                    candidate.settimeout(2)
+                    return candidate
+                if alive:
+                    candidate.settimeout(2)
+                    return candidate
+                self._fecha(candidate)
+            except OSError:
+                self._fecha(candidate)
+                time.sleep(0.15)
+        return None
+
+    def _first_video_chunk(self, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data = self.socket.recv(65536)
+            except socket.timeout:
+                continue
+            except OSError:
+                return None
+            if data:
+                self.socket.settimeout(2)
+                return data
+            return None
+        return None
 
     @staticmethod
     def _fecha(sock):
@@ -446,22 +518,26 @@ class ScreenCapture:
         self._server_pushed = True
 
     def _setup_forward(self):
-
+        remote = f"localabstract:{self.socket_name}"
+        port = type(self).PORT
         result = subprocess.run(
-            self._adb(
-                "forward",
-                "--no-rebind",
-                f"tcp:{type(self).PORT}",
-                f"localabstract:{self.socket_name}",
-            ),
+            self._adb("forward", "--no-rebind", f"tcp:{port}", remote),
             check=True,
             capture_output=True,
             text=True,
             timeout=10.0,
         )
-
-        self.PORT = type(self).PORT or int(result.stdout.strip())
+        self.PORT = port or int(result.stdout.strip())
         self._forward_port = self.PORT
+        if self.control_enabled:
+            result = subprocess.run(
+                self._adb("forward", "--no-rebind", "tcp:0", remote),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+            )
+            self._control_forward_port = int(result.stdout.strip())
 
     def _resolve_server_version(self):
         if self.SERVER_VERSION is None:
@@ -495,7 +571,11 @@ class ScreenCapture:
     def _start_server(self):
 
         version = self._resolve_server_version()
-        options = ["tunnel_forward=true", "control=false", "cleanup=false"]
+        options = [
+            "tunnel_forward=true",
+            f"control={str(self.control_enabled).lower()}",
+            "cleanup=false",
+        ]
         if version >= (2, 0):
             options.extend((f"scid={self.scid:08x}", "audio=false", "video_codec=h264"))
         raw_option = "raw_stream" if version >= (2, 1) else "raw_video_stream"
@@ -525,6 +605,14 @@ class ScreenCapture:
         with self.condition:
             self.running = False
             self.condition.notify_all()
+
+        if self.control_socket:
+            try:
+                self.control_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self._fecha(self.control_socket)
+            self.control_socket = None
 
         if self.socket:
 
@@ -571,17 +659,40 @@ class ScreenCapture:
         logger.info(t("messages.capture_stopped"))
 
     def _cleanup_forward(self):
+        for attribute in ("_forward_port", "_control_forward_port"):
+            port = getattr(self, attribute)
+            if port is None:
+                continue
+            try:
+                subprocess.run(
+                    self._adb("forward", "--remove", f"tcp:{port}"),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5.0,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                logger.warning(t("messages.tunnel_cleanup_failed"), error)
+            setattr(self, attribute, None)
 
-        if self._forward_port is None:
-            return
-
-        try:
-            subprocess.run(
-                self._adb("forward", "--remove", f"tcp:{self._forward_port}"),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5.0,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            logger.warning(t("messages.tunnel_cleanup_failed"), error)
-        self._forward_port = None
+    def inject_touch(self, action, x, y, width, height):
+        actions = {"down": 0, "up": 1, "move": 2, "cancel": 3}
+        if action not in actions or self.control_socket is None:
+            raise RuntimeError(t("messages.control_session_ended"))
+        if not (0 <= x < width and 0 <= y < height and 1 <= width <= 65535 and 1 <= height <= 65535):
+            raise ValueError(t("messages.invalid_control_action"))
+        pressure = 65535 if action in {"down", "move"} else 0
+        message = struct.pack(
+            ">BBQiiHHHII",
+            2,
+            actions[action],
+            0xFFFFFFFFFFFFFFFE,
+            x,
+            y,
+            width,
+            height,
+            pressure,
+            0,
+            0,
+        )
+        with self._control_lock:
+            self.control_socket.sendall(message)

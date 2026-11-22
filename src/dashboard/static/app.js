@@ -40,6 +40,22 @@ let visionStream = null;
 let visionUrl = null;
 let visionMode = "off";
 let visionResume = false;
+let controlWanted = false;
+let controlDevice = null;
+let controlSessionId = null;
+let controlGeneration = 0;
+let controlController = null;
+let controlUrl = null;
+let controlPointer = null;
+let controlActionBusy = false;
+let controlActionsPending = 0;
+let controlActionQueue = Promise.resolve();
+let controlMoveTimer = null;
+let controlMovePending = null;
+let controlMoveInFlight = false;
+let controlLastMoveAt = 0;
+let controlMode = "off";
+let controlStopPromise = null;
 let templateSelection = null;
 let templateStart = null;
 let templateDevice = null;
@@ -236,6 +252,7 @@ function logout(expired = false) {
   if ($("dataset-dialog").open) closeDatasets();
   closeTemplateSelector();
   stopVision();
+  stopControl({ notify: false });
   authenticated = false;
   rememberToken("");
   selected.clear();
@@ -755,6 +772,7 @@ async function closeDetails() {
   if (changeCount() && !confirm(t("web.confirm_discard_changes"))) return false;
   closeTemplateSelector();
   stopVision();
+  await stopControl();
   $("device-dialog").close();
   draft = null;
   savedProfile = null;
@@ -770,6 +788,8 @@ function renderDetailStatus() {
   if (!device) return;
   if (visionWanted && !device.running) stopVision({ mode: "stopped", message: t("web.bot_stopped_hint") });
   else renderVisionControls();
+  if (device.running && controlWanted) stopControl();
+  renderControlControls();
   if (detailSession !== (device.started_at || null)) {
     detailSession = device.started_at || null;
     resetLogs();
@@ -1112,6 +1132,34 @@ function renderVisionControls() {
   $("vision-image").alt = mode === "ai" ? t("web.ai_detections_alt") : t("web.template_detections_alt");
   $("vision-toggle").textContent = visionWanted ? t("web.stop_vision") : visionMode === "error" ? t("web.try_again") : t("web.view_vision");
   $("vision-toggle").disabled = visionMode === "starting" || (!visionWanted && (!device?.running || document.hidden));
+}
+
+function renderControlControls() {
+  const device = detailId ? deviceById(detailId) : null;
+  $("control-toggle").textContent = controlWanted ? t("web.control_stop") : t("web.control_start");
+  $("control-toggle").disabled = !controlWanted && (!device?.connected || device.running || document.hidden);
+  if (!controlWanted && controlMode === "off") {
+    $("control-placeholder-message").textContent = device?.running ? t("web.control_bot_running") : t("web.control_gesture_hint");
+  }
+}
+
+function renderControl(mode, message = "") {
+  controlMode = mode;
+  const descriptions = {
+    off: [t("web.control_off"), t("web.control_gesture_hint")],
+    starting: [t("web.control_starting"), t("web.control_starting")],
+    live: [t("web.control_live"), t("web.control_gesture_hint")],
+    error: [t("web.control_off"), t("web.control_action_failed")]
+  };
+  const [status, description] = descriptions[mode] || descriptions.off;
+  $("control-status").textContent = status;
+  $("control-placeholder-title").textContent = status;
+  $("control-placeholder-message").textContent = message || description;
+  $("control-stage").classList.toggle("vision-error", mode === "error");
+  $("control-stage").classList.toggle("vision-live", mode === "live");
+  $("control-image").hidden = mode !== "live";
+  $("control-placeholder").hidden = mode === "live";
+  renderControlControls();
 }
 
 function renderVision(mode, message = "") {
@@ -1665,11 +1713,203 @@ async function streamVision(generation) {
   }
 }
 
+async function startControl() {
+  if (controlStopPromise) await controlStopPromise;
+  if (activeTab !== "control" || !$("device-dialog").open) return;
+  const device = deviceById(detailId);
+  if (!authenticated || !detailId || !device?.connected || device.running || controlWanted) return;
+  const id = detailId;
+  controlWanted = true;
+  controlDevice = id;
+  const requestedSessionId = templateSnapshotId();
+  controlSessionId = requestedSessionId;
+  const generation = ++controlGeneration;
+  renderControl("starting");
+  try {
+    const result = await api(`/api/devices/${encodeURIComponent(id)}/control`, {
+      method: "POST", body: JSON.stringify({ enabled: true, session_id: controlSessionId })
+    });
+    if (generation !== controlGeneration || !controlWanted) {
+      if (result.session_id === requestedSessionId) {
+        await api(`/api/devices/${encodeURIComponent(id)}/control`, {
+          method: "POST", body: JSON.stringify({ enabled: false, session_id: requestedSessionId })
+        });
+      }
+      return;
+    }
+    if (typeof result.session_id !== "string" || !result.session_id) throw new Error(t("web.control_action_failed"));
+    controlSessionId = result.session_id;
+    const controller = new AbortController();
+    controlController = controller;
+    const response = await fetch(`/api/devices/${encodeURIComponent(id)}/control/stream?session_id=${encodeURIComponent(controlSessionId)}`, {
+      headers: { Accept: "multipart/x-mixed-replace", "X-Eatventure-Locale": locale, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal: controller.signal,
+      cache: "no-store"
+    });
+    if (generation !== controlGeneration) return;
+    if (response.status === 401) { logout(true); return; }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(typeof body.detail === "string" ? body.detail : t("web.control_action_failed"));
+    }
+    const contentType = response.headers.get("Content-Type") || "";
+    const boundary = contentType.match(/\bboundary=(?:"([^"]+)"|([^;\s]+))/i);
+    if (!/^multipart\/x-mixed-replace\b/i.test(contentType) || !boundary) throw new Error(t("web.invalid_jpeg_stream"));
+    let idleTimer = null;
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), 10000);
+    };
+    resetIdleTimer();
+    try {
+      for await (const frame of jpegFrames(response.body, {
+        boundary: boundary[1] || boundary[2], signal: controller.signal
+      })) {
+        if (generation !== controlGeneration || !controlWanted) return;
+        resetIdleTimer();
+        const image = $("control-image");
+        const previousUrl = controlUrl;
+        const url = URL.createObjectURL(new Blob([frame], { type: "image/jpeg" }));
+        controlUrl = url;
+        image.onload = () => {
+          if (previousUrl && previousUrl !== controlUrl) URL.revokeObjectURL(previousUrl);
+          if (generation === controlGeneration && controlWanted) renderControl("live");
+        };
+        image.onerror = () => {
+          if (generation === controlGeneration && controlWanted) stopControl({ mode: "error", message: t("web.control_action_failed") });
+        };
+        image.src = url;
+      }
+      if (generation === controlGeneration && controlWanted) throw new Error(t("web.stream_ended_retry"));
+    } finally { clearTimeout(idleTimer); }
+  } catch (error) {
+    if (generation === controlGeneration && controlWanted) {
+      await stopControl({ mode: "error", message: error.name === "AbortError" ? t("web.frame_timeout") : error.message });
+    }
+  } finally {
+    if (generation === controlGeneration) controlController = null;
+  }
+}
+
+async function stopControl({ mode = "off", message = "", notify = true } = {}) {
+  if (!controlWanted && controlStopPromise) return controlStopPromise;
+  const id = controlDevice;
+  const wasWanted = controlWanted;
+  const sessionId = controlSessionId;
+  controlWanted = false;
+  controlDevice = null;
+  controlSessionId = null;
+  controlPointer = null;
+  clearTimeout(controlMoveTimer);
+  controlMoveTimer = null;
+  controlMovePending = null;
+  controlGeneration += 1;
+  if (controlController) controlController.abort();
+  controlController = null;
+  $("control-image").onload = null;
+  $("control-image").onerror = null;
+  $("control-image").removeAttribute("src");
+  if (controlUrl) URL.revokeObjectURL(controlUrl);
+  controlUrl = null;
+  renderControl(mode, message);
+  if (!id || !wasWanted || !authenticated) return;
+  const path = `/api/devices/${encodeURIComponent(id)}/control`;
+  const stopping = (async () => {
+    try {
+      if (notify) {
+        await api(path, { method: "POST", body: JSON.stringify({ enabled: false, session_id: sessionId }) });
+      } else {
+        await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Eatventure-Locale": locale, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ enabled: false, session_id: sessionId }), keepalive: true
+        });
+      }
+    } catch (error) {
+      if (notify) toast(error.message, true);
+    }
+  })();
+  controlStopPromise = stopping;
+  try { await stopping; }
+  finally { if (controlStopPromise === stopping) controlStopPromise = null; }
+}
+
+function controlPoint(event, clampToImage = false) {
+  const image = $("control-image");
+  const rect = image.getBoundingClientRect();
+  if (!rect.width || !rect.height || !image.naturalWidth || !image.naturalHeight) return null;
+  const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
+  const left = rect.left + (rect.width - image.naturalWidth * scale) / 2;
+  const top = rect.top + (rect.height - image.naturalHeight * scale) / 2;
+  const x = (event.clientX - left) / scale;
+  const y = (event.clientY - top) / scale;
+  if (!clampToImage && (x < 0 || y < 0 || x > image.naturalWidth || y > image.naturalHeight)) return null;
+  return {
+    x: Math.max(0, Math.min(image.naturalWidth - 1, Math.round(x))),
+    y: Math.max(0, Math.min(image.naturalHeight - 1, Math.round(y)))
+  };
+}
+
+async function sendControlAction(payload) {
+  const deviceId = controlDevice;
+  if (!controlWanted || !deviceId) return;
+  controlActionsPending += 1;
+  controlActionBusy = true;
+  renderControlControls();
+  const request = controlActionQueue.catch(() => {}).then(() => api(`/api/devices/${encodeURIComponent(deviceId)}/control/action`, {
+    method: "POST", body: JSON.stringify(payload)
+  }));
+  controlActionQueue = request;
+  try {
+    await request;
+  } catch (error) {
+    if (controlWanted) toast(error.message || t("web.control_action_failed"), true);
+  } finally {
+    controlActionsPending -= 1;
+    controlActionBusy = controlActionsPending > 0;
+    renderControlControls();
+  }
+}
+
+function flushControlMove() {
+  controlMoveTimer = null;
+  const point = controlMovePending;
+  controlMovePending = null;
+  if (!point || !controlWanted) { controlMoveInFlight = false; return; }
+  controlMoveInFlight = true;
+  controlLastMoveAt = Date.now();
+  sendControlAction({ action: "move", x: point.x, y: point.y }).finally(() => {
+    controlMoveInFlight = false;
+    if (controlMovePending) sendControlPointerEvent("move", controlMovePending);
+  });
+}
+
+function sendControlPointerEvent(action, point) {
+  if (!controlWanted) return;
+  if (action === "move") {
+    controlMovePending = point;
+    if (controlMoveTimer || controlMoveInFlight) return;
+    const wait = Math.max(0, 33 - (Date.now() - controlLastMoveAt));
+    controlMoveTimer = setTimeout(flushControlMove, wait);
+    return;
+  }
+  if (action === "up" || action === "cancel") {
+    clearTimeout(controlMoveTimer);
+    controlMoveTimer = null;
+    if (action === "up" && controlMovePending) {
+      sendControlAction({ action: "move", x: point.x, y: point.y });
+    }
+    controlMovePending = null;
+  }
+  return sendControlAction({ action, x: point.x, y: point.y });
+}
+
 function setTab(tab) {
   if (activeTab === "vision" && tab !== "vision") stopVision();
+  if (activeTab === "control" && tab !== "control") stopControl();
   activeTab = tab;
   if (tab === "items") { renderItems(); updatePending(); }
-  for (const key of ["settings", "items", "vision", "logs"]) {
+  for (const key of ["settings", "items", "vision", "control", "logs"]) {
     const active = key === tab;
     $(`tab-${key}`).classList.toggle("active", active);
     $(`tab-${key}`).setAttribute("aria-selected", String(active));
@@ -1677,6 +1917,7 @@ function setTab(tab) {
     $(`panel-${key}`).hidden = !active;
   }
   if (tab === "vision") startVision();
+  if (tab === "control") renderControl("off");
   if (tab === "logs") pollLogs();
 }
 
@@ -2221,7 +2462,7 @@ $("item-search").addEventListener("input", renderItems);
 for (const tab of document.querySelectorAll("[data-tab]")) {
   tab.addEventListener("click", () => setTab(tab.dataset.tab));
   tab.addEventListener("keydown", (event) => {
-    const tabs = ["settings", "items", "vision", "logs"];
+    const tabs = ["settings", "items", "vision", "control", "logs"];
     let index = tabs.indexOf(activeTab);
     if (event.key === "ArrowRight") index = (index + 1) % tabs.length;
     else if (event.key === "ArrowLeft") index = (index + tabs.length - 1) % tabs.length;
@@ -2254,6 +2495,7 @@ $("language-switch").addEventListener("click", (event) => {
   if (button && button.dataset.locale !== locale) setLocale(button.dataset.locale);
 });
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
+$("control-toggle").addEventListener("click", () => { if (controlWanted) stopControl(); else startControl(); });
 $("vision-details").addEventListener("change", () => {
   setVisionDetails($("vision-details").checked);
   if (visionWanted) { stopVision(); startVision(); }
@@ -2320,6 +2562,32 @@ $("template-image").addEventListener("pointerup", (event) => {
   $("template-selection-status").textContent = t("web.selection_review_hint", { value_1: templateSelection.width, value_2: templateSelection.height });
 });
 $("template-image").addEventListener("pointercancel", () => { templateStart = null; templatePointerId = null; });
+$("control-image").addEventListener("pointerdown", (event) => {
+  if (!controlWanted || controlActionBusy || (event.pointerType === "mouse" && event.button !== 0)) return;
+  const point = controlPoint(event);
+  if (!point) return;
+  event.preventDefault();
+  controlPointer = { pointerId: event.pointerId };
+  $("control-image").setPointerCapture(event.pointerId);
+  sendControlPointerEvent("down", point);
+});
+$("control-image").addEventListener("pointermove", (event) => {
+  if (!controlPointer || event.pointerId !== controlPointer.pointerId) return;
+  const point = controlPoint(event, true);
+  if (point) sendControlPointerEvent("move", point);
+});
+$("control-image").addEventListener("pointerup", (event) => {
+  if (!controlPointer || event.pointerId !== controlPointer.pointerId) return;
+  const point = controlPoint(event, true);
+  controlPointer = null;
+  if (point) sendControlPointerEvent("up", point);
+});
+$("control-image").addEventListener("pointercancel", (event) => {
+  if (!controlPointer || event.pointerId !== controlPointer.pointerId) return;
+  const point = controlPoint(event, true) || { x: 0, y: 0 };
+  controlPointer = null;
+  sendControlPointerEvent("cancel", point);
+});
 $("connect-open").addEventListener("click", () => { $("connect-result").textContent = ""; $("connect-dialog").showModal(); });
 $("reconnect-open").addEventListener("click", () => {
   $("connect-result").textContent = "";
@@ -2354,6 +2622,7 @@ setInterval(() => { if (!document.hidden) refreshDashboardRevision(); }, 4000);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     if (visionWanted) stopVision({ mode: "paused", pause: true });
+    if (controlWanted) stopControl({ notify: false });
   } else {
     refreshState();
     pollLogs();
@@ -2361,7 +2630,7 @@ document.addEventListener("visibilitychange", () => {
     if (visionResume && activeTab === "vision") startVision();
   }
 });
-window.addEventListener("pagehide", () => stopVision());
+window.addEventListener("pagehide", () => { stopVision(); stopControl({ notify: false }); });
 loadMessages().catch(() => {
   locale = document.documentElement.lang;
   numberFormat = new Intl.NumberFormat(locale);

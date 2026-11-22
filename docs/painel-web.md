@@ -83,6 +83,8 @@ continuam disponíveis. **Somente layout** é exclusivo do modo por templates.
 
 Clique no card do dispositivo para abrir diretamente a **Visão IA**; com o bot em execução, a transmissão começa automaticamente. A engrenagem continua abrindo as configurações. A prévia mostra a tela com as detecções e métricas desenhadas pelo bot, sem abrir janelas no servidor, tanto no Windows quanto no Linux. A transmissão usa uma conexão HTTP contínua (MJPEG), com até 20 imagens por segundo, conforme a captura e a conexão.
 
+Na aba **Controlar dispositivo**, conecte-se ao aparelho quando o bot estiver parado. A tela é transmitida pelo scrcpy; toque para clicar, arraste para rolar e mantenha pressionado para um toque longo. O controle por toque requer scrcpy 2.0 ou mais recente. O controle se desconecta ao sair da aba, ocultar o navegador ou iniciar o bot. Esta função usa a conexão ADB autorizada do aparelho.
+
 O botão **Dados** de cada bot abre o dataset da execução correspondente. O painel agrupa as coletas pelo ID da sessão, ordena as imagens pela data de criação e mostra previews em uma grade. É possível excluir a sessão inteira ou um intervalo inclusivo pelos números exibidos nas imagens. A limpeza remove os registros do `samples.jsonl` e apaga somente arquivos que não sejam mais referenciados.
 
 Desenho, redução e compressão das imagens rodam em uma thread exclusiva da prévia de cada dispositivo. Ela sempre usa o quadro mais recente e descarta os pendentes antigos, sem formar uma fila de vídeo atrasado nem fazer esse trabalho no loop de ações do bot.
